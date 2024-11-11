@@ -2,5 +2,5 @@
     <string name="app_name">SignIn Demo</string>
     <string name="google_sign_in">Google Sign In</string>
     <string name="logout">logout</string>
-    <string name="default_web_client_id">783108512827-iiqi8hn1mqjdu4munme7qmeuanpugljp.apps.googleusercontent.com</string>
+    <string name="default_web_client_id">YOUR_CLIENT_ID</string>
 </resources>
