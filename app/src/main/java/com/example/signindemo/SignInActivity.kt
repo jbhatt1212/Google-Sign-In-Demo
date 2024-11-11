@@ -94,7 +94,7 @@ class SignInActivity : AppCompatActivity() {
         // Set up Google ID options for the request
         googleOption = GetGoogleIdOption.Builder()
             .setFilterByAuthorizedAccounts(true)
-            .setServerClientId("783108512827-iiqi8hn1mqjdu4munme7qmeuanpugljp.apps.googleusercontent.com")
+            .setServerClientId("your_client_id")
             .setAutoSelectEnabled(true)
             .setNonce(hashedNonce)
             .build()
