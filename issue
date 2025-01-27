@@ -1,0 +1,869 @@
+package amplify.call.activity.message
+
+//import amplify.call.models.model.ContactDataModel
+//import amplify.call.models.model.Fruit
+import amplify.call.BuildConfig
+import amplify.call.MainActivity
+import amplify.call.R
+import amplify.call.activity.authenticate.NumberVerificationActivity
+import amplify.call.activity.authenticate.SignInEmailActivity
+import amplify.call.activity.contacts.ContactActivity
+import amplify.call.activity.drawer.NumberPurchaseActivity
+import amplify.call.activity.intro.PricingActivity
+import amplify.call.activity.telnyx.CallInComingActivity
+import amplify.call.adapters.ChatConversationAdapter
+import amplify.call.adapters.NewChatContactAdapter
+import amplify.call.databinding.ActivityNewMessageBinding
+import amplify.call.dialog.ImagePreviewDialog
+import amplify.call.dialog.showPermissionRationaleDialog
+import amplify.call.models.model.ContactsModel
+import amplify.call.models.responses.ChatConversation
+import amplify.call.models.viewmodels.ChatNewViewModel
+import amplify.call.telnyx.TelnyxManager
+import amplify.call.utils.LocalCaptureFiles
+import amplify.call.utils.Logger
+import amplify.call.utils.Prefs
+import amplify.call.utils.getFormattedNumber
+import amplify.call.utils.getImagePath
+import amplify.call.utils.getPath
+import amplify.call.utils.getRotateImage
+import amplify.call.utils.isContainsNumber
+import amplify.call.utils.isValidNumber
+import amplify.call.utils.keyAddFavourite
+import amplify.call.utils.keyCallerId
+import amplify.call.utils.keyCallerName
+import amplify.call.utils.keyCallerNumber
+import amplify.call.utils.keyContactForChat
+import amplify.call.utils.keyShowRating
+import amplify.call.utils.keyToSelectContact
+import amplify.call.utils.setClipboard
+import amplify.call.utils.showToast
+import android.R.attr.text
+import android.annotation.SuppressLint
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
+import android.util.Log
+import android.view.KeyEvent
+import android.view.View
+import android.view.View.OnFocusChangeListener
+import android.view.View.OnTouchListener
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.bumptech.glide.Glide
+import com.google.gson.Gson
+import com.telnyx.webrtc.sdk.model.SocketMethod
+import com.telnyx.webrtc.sdk.verto.receive.InviteResponse
+import com.telnyx.webrtc.sdk.verto.receive.ReceivedMessageBody
+import com.telnyx.webrtc.sdk.verto.receive.SocketObserver
+import com.vanniktech.emoji.EmojiPopup
+import java.io.File
+import java.io.FileNotFoundException
+import java.io.FileOutputStream
+import java.io.IOException
+
+
+class NewMessageActivity : MainActivity() {
+
+    /*region Variable Declarations*/
+    private val TAG = NewMessageActivity::class.java.simpleName
+    private lateinit var binding: ActivityNewMessageBinding
+
+    //    private lateinit var newChatContactAdapter: ArrayAdapter<String>
+    private var contactsList: List<ContactsModel> = emptyList()
+    private var newChatContactAdapter: NewChatContactAdapter? = null
+
+    private var chatConversationList: List<ChatConversation> = emptyList()
+    private lateinit var chatConversationAdapter: ChatConversationAdapter
+
+
+    private val chatNewViewModel: ChatNewViewModel by viewModels()
+
+
+
+    private var sourceNumber: String = ""
+    private var destinationNumber: String = ""
+    private var documentUrl: String = ""
+    private var chatMessage: String = ""
+    private var page = 1
+    private var totalPages = 1
+    private var isLoading = false
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val runnable = object : Runnable {
+        override fun run() {
+            if (Prefs.phoneNumber.isNotEmpty() && destinationNumber.isNotEmpty()) {
+                Log.e(TAG,"run")
+                chatNewViewModel.getLatestRecord(Prefs.phoneNumber, destinationNumber, 1)
+            }
+            handler.postDelayed(this, 10000)
+        }
+    }
+    private lateinit var imm: InputMethodManager
+    private lateinit var emojiPopup: EmojiPopup
+    /*endregion*/
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityNewMessageBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            insets
+        }
+        imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        handleAdapter()
+        setupBackPress()
+        handleClickListener()
+        handleResponse()
+        if (!Prefs.isGuest && Prefs.isTelnyxUserLogin) {
+            observeSocketResponses()
+        }
+        handler.post(runnable)
+        manageEmojiEditor()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        callUserDetailApi(true)
+    }
+
+    private fun manageEmojiEditor() {
+        emojiPopup = EmojiPopup(
+            rootView = binding.root,
+            editText = binding.etTypeMessage,
+            onEmojiClickListener = { emoji -> Logger.d(TAG, "onEmojiClickListener $emoji") },
+            onSoftKeyboardOpenListener = { sko ->
+                Logger.d(
+                    TAG,
+                    "onSoftKeyboardOpenListener $sko"
+                )
+            },
+            onSoftKeyboardCloseListener = {
+                Logger.d(TAG, "onSoftKeyboardCloseListener")
+                binding.ivAddEmoji.setImageResource(R.drawable.ic_emoji)
+            },
+            onEmojiBackspaceClickListener = { Logger.d(TAG, "onEmojiBackspaceClickListener ") },
+            onEmojiPopupDismissListener = { Logger.d(TAG, "onEmojiPopupDismissListener") },
+            onEmojiPopupShownListener = {
+                Logger.d(TAG, "onEmojiPopupShownListener")
+                binding.ivAddEmoji.setImageResource(R.drawable.ic_keyboard)
+            },
+        )
+
+    }
+
+    private fun handleAdapter() {
+
+        chatConversationAdapter = ChatConversationAdapter({ imagePreView ->
+            showImagePreview(imagePreView)
+        }, { copyMessage ->
+            setClipboard(this, copyMessage.msgBody.toString())
+        })
+        val rvChatConversationManager =
+            LinearLayoutManager(this, LinearLayoutManager.VERTICAL, true)
+        binding.rvChatConversation.layoutManager = rvChatConversationManager
+        binding.rvChatConversation.adapter = chatConversationAdapter
+        binding.rvChatConversation.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                super.onScrolled(recyclerView, dx, dy)
+                if (!isLoading) {
+                    if (Prefs.phoneNumber.isNotEmpty() && destinationNumber.isNotEmpty()) {
+                        if (rvChatConversationManager.findLastVisibleItemPosition() == chatConversationAdapter.itemCount - 1) {
+                            if (page < totalPages) {
+                                isLoading = true
+                                page += 1
+                                chatNewViewModel.getChatFromApi(
+                                    Prefs.phoneNumber,
+                                    destinationNumber,
+                                    page
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            override fun onScrollStateChanged(
+                recyclerView: RecyclerView,
+                newState: Int
+            ) {
+                super.onScrollStateChanged(recyclerView, newState)
+            }
+        })
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun handleClickListener() {
+        binding.ivBack.setOnClickListener {
+            backPress()
+        }
+
+        binding.acToNumber.setOnItemClickListener { parent, view, position, id ->
+            val selectedNumber = newChatContactAdapter?.getItem(position)
+            val contact = contactsList.find { it.contactNumber == selectedNumber }
+//            val contact =
+//                contactsList.find { it.contactName == newChatContactAdapter?.getItem(position) }
+            Logger.d(TAG, "setOnItemClickListener contactNumber ${contact?.contactNumber}")
+
+            if (contact != null) {
+                destinationNumber = contact.contactNumber
+                binding.acToNumber.visibility = View.GONE
+                binding.clToNumberView.visibility = View.VISIBLE
+                destinationNumber = binding.acToNumber.text.toString()
+                binding.tvToNumber.text = getFormattedNumber(destinationNumber)
+                chatNewViewModel.getChatFromDB(Prefs.phoneNumber, destinationNumber)
+            }
+
+        }
+
+
+
+        binding.acToNumber.setOnEditorActionListener(object : TextView.OnEditorActionListener {
+            override fun onEditorAction(v: TextView?, actionId: Int, event: KeyEvent?): Boolean {
+                when (actionId) {
+                    EditorInfo.IME_ACTION_DONE -> {
+                        Logger.d(TAG, "onEditorAction DONE")
+                        binding.acToNumber.visibility = View.GONE
+                        binding.clToNumberView.visibility = View.VISIBLE
+                        destinationNumber = binding.acToNumber.text.toString()
+                        binding.tvToNumber.text = getFormattedNumber(destinationNumber)
+                        binding.acToNumber.showDropDown()
+                        return true
+                    }
+                }
+                return true
+            }
+        })
+
+            binding.acToNumber.addTextChangedListener(object : TextWatcher {
+                private var isEditing = false
+                override fun afterTextChanged(s: Editable?) {
+                    if (isEditing) return
+                    isEditing = true
+
+            destinationNumber = s.toString()
+            val formattedText = getFormattedNumber(destinationNumber)
+
+            if (destinationNumber != formattedText) {
+                binding.acToNumber.setTextKeepState(formattedText)
+                binding.acToNumber.setSelection(formattedText.length)
+            }
+                  //  binding.acToNumber.addTextChangedListener(this)
+                    isEditing = false
+
+
+
+    //                binding.acToNumber.removeTextChangedListener(this)
+    //                destinationNumber = binding.acToNumber.text.toString()
+    //                destinationNumber = getFormattedNumber(destinationNumber)
+    //                binding.acToNumber.setText(destinationNumber)
+    //                try {
+    //                    binding.acToNumber.setSelection(destinationNumber.length)
+    //                } catch (e: Exception) {
+    //                    Logger.d(TAG, "Exception ${e.message}")
+    //                }
+                   // binding.acToNumber.addTextChangedListener(this)
+               }
+
+                override fun beforeTextChanged(
+                    s: CharSequence?,
+                    start: Int,
+                    count: Int,
+                    after: Int
+                ) {
+                    Logger.d(TAG, "beforeTextChanged ${s.toString()}")
+                }
+
+                override fun onTextChanged(
+                    s: CharSequence?,
+                    start: Int,
+                    before: Int,
+                    count: Int
+                ) {
+                    Logger.d(TAG, "onTextChanged ${s.toString()}")
+                    if (s!=destinationNumber) {
+                        chatConversationAdapter.clearChatList()
+                        Logger.d(TAG, "Chat list cleared because the input is empty.")
+                    }
+
+                }
+            })
+        binding.ivToNumberClose.setOnClickListener {
+            chatConversationAdapter.clearChatList()
+            binding.acToNumber.visibility = View.VISIBLE
+            binding.clToNumberView.visibility = View.GONE
+            destinationNumber = ""
+            binding.acToNumber.setText(destinationNumber)
+
+        }
+        binding.ivAddContact.setOnClickListener {
+            getContactForChat.launch(
+                Intent(this, ContactActivity::class.java)
+                    .putExtra(keyAddFavourite, false)
+                    .putExtra(keyToSelectContact, true)
+            )
+        }
+
+        binding.ivAddImage.setOnClickListener {
+            handleImageCapture()
+        }
+
+        binding.ivPreviewClose.setOnClickListener {
+            binding.clImageSelected.visibility = View.GONE
+            binding.etTypeMessage.visibility = View.VISIBLE
+            documentUrl = ""
+            chatMessage = ""
+            binding.etTypeMessage.setText(chatMessage)
+        }
+
+        binding.ivSelectImage.setOnClickListener {
+            handleImagePermission()
+        }
+
+        binding.ivAddEmoji.setOnClickListener {
+            if (emojiPopup.isShowing) {
+                binding.ivAddEmoji.setImageResource(R.drawable.ic_emoji)
+                emojiPopup.dismiss()
+            } else {
+                binding.ivAddEmoji.setImageResource(R.drawable.ic_keyboard)
+                emojiPopup.toggle()
+            }
+        }
+
+        binding.etTypeMessage.onFocusChangeListener = object : OnFocusChangeListener {
+            override fun onFocusChange(v: View?, hasFocus: Boolean) {
+                Logger.e(TAG, "onFocusChange  hasFocus $hasFocus")
+                if (hasFocus) {
+//                    showHideEmojiKeyboard(showEmojiKeyBoard = false)
+                }
+            }
+        }
+
+        binding.ivSendMsg.setOnClickListener {
+            chatMessage = binding.etTypeMessage.text.toString()
+            binding.ivSendMsg.isClickable = false
+            sendSMSWithValidation()
+        }
+    }
+
+    private val pricingScreenLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (it.resultCode == RESULT_OK) {
+                sendSMSWithValidation()
+            }
+        }
+
+    private val signInScreenLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (it.resultCode == RESULT_OK) {
+                sendSMSWithValidation()
+            }
+        }
+
+    private fun sendSMSWithValidation() {
+        if (destinationNumber.isEmpty()) {
+            binding.ivSendMsg.isClickable = true
+            showToast(this, getString(R.string.new_message_error_number))
+        } else if (!isValidNumber(destinationNumber)){
+            binding.ivSendMsg.isClickable = true
+            showToast(this, getString(R.string.validation_dial_number))
+        } else if (chatMessage.isNullOrEmpty()) {
+            binding.ivSendMsg.isClickable = true
+            showToast(this, getString(R.string.new_message_error_chat_message))
+        } else if (!Prefs.isPlanActive) {
+            binding.ivSendMsg.isClickable = true
+            pricingScreenLauncher.launch(
+                Intent(this, PricingActivity::class.java)
+                    .putExtra(keyShowRating, false)
+            )
+        } else if (Prefs.isGuest) {
+            binding.ivSendMsg.isClickable = true
+            signInScreenLauncher.launch(
+                Intent(this, SignInEmailActivity::class.java)
+            )
+        } else if (!Prefs.isEmailVerified) {
+            binding.ivSendMsg.isClickable = true
+            showEmailAlert {
+                chatNewViewModel.resendEmail()
+            }
+        } else if (!Prefs.isVerifiedNumber) {
+            phoneVerificationLauncher.launch(
+                Intent(this, NumberVerificationActivity::class.java)
+            )
+        } else if (!Prefs.isNumberPurchased) {
+            purchaseNumberLauncher.launch(
+                Intent(this, NumberPurchaseActivity::class.java)
+            )
+        } else if (!documentUrl.isNullOrEmpty()) {
+            chatNewViewModel.chatSentAttachment(
+                to = destinationNumber,
+                from = Prefs.phoneNumber,
+                subject = chatMessage,
+                messageType = "MMS",
+                mainSMSId = "0",
+                fileImage = documentUrl
+            )
+        } else if (!chatMessage.isNullOrEmpty()) {
+            chatNewViewModel.sentChatMessage(
+                to = destinationNumber,
+                from = Prefs.phoneNumber,
+                mainSMSId = "0",
+                text = chatMessage,
+                messageType = "SMS"
+            )
+        }
+    }
+
+    private val phoneVerificationLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (it.resultCode == RESULT_OK) {
+                sendSMSWithValidation()
+            }
+        }
+
+    private val purchaseNumberLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (it.resultCode == RESULT_OK) {
+                sendSMSWithValidation()
+            }
+        }
+
+    /*region Camera permission */
+    private fun handleImageCapture() {
+        val permission = android.Manifest.permission.CAMERA
+        when {
+            ContextCompat.checkSelfPermission(
+                this,
+                permission
+            ) == PackageManager.PERMISSION_GRANTED -> {
+                getImagePath(this)?.let { cameraLauncher.launch(it) }
+            }
+
+            shouldShowRequestPermissionRationale(permission) -> {
+                showPermissionRationaleDialog(
+                    this,
+                    R.string.dlg_cap_permission_title,
+                    R.string.dlg_cap_permission_dec,
+                    R.string.dlg_btn_allow,
+                    null
+                )
+            }
+
+            else -> {
+                requestCameraPermission.launch(permission)
+            }
+        }
+    }
+
+    private val requestCameraPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            if (!isGranted) {
+                showPermissionRationaleDialog(
+                    this,
+                    R.string.dlg_cap_permission_title,
+                    R.string.dlg_cap_permission_dec,
+                    R.string.dlg_btn_allow,
+                    null
+                )
+            } else {
+                getImagePath(this)?.let { cameraLauncher.launch(it) }
+            }
+        }
+
+    private val cameraLauncher =
+        registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+            if (success) {
+                val file =
+                    File(
+                        getExternalFilesDir(Environment.DIRECTORY_DCIM).toString(),
+                        LocalCaptureFiles
+                    )
+                val fileSizeInBytes = file.length()
+                val fileSizeInKB = fileSizeInBytes / 1024
+                if (fileSizeInKB > 512) {
+                    val imageUri =
+                        FileProvider.getUriForFile(
+                            this,
+                            BuildConfig.APPLICATION_ID + ".provider",
+                            file
+                        )
+                    val inputStream = contentResolver.openInputStream(imageUri!!)
+                    val oldPhoto = BitmapFactory.decodeStream(inputStream)
+                    val photo = getRotateImage(file.absolutePath, oldPhoto)
+                    try {
+                        val fos = FileOutputStream(file.absolutePath)
+                        photo!!.compress(Bitmap.CompressFormat.JPEG, 50, fos)
+                        fos.close()
+                    } catch (e: FileNotFoundException) {
+                        Log.d("TAG", "File not found: " + e.message)
+                    } catch (e: IOException) {
+                        Log.d("TAG", "Error accessing file: " + e.message)
+                    }
+                }
+                Glide.with(this).load(file.absolutePath).into(binding.ivSentImage)
+                binding.clImageSelected.visibility = View.VISIBLE
+                binding.etTypeMessage.visibility = View.INVISIBLE
+                documentUrl = file.absolutePath
+                chatMessage = "Picture"
+                binding.etTypeMessage.setText(chatMessage)
+            }
+        }
+    /*endregion*/
+
+    /*region Image Permission*/
+    private fun handleImagePermission() {
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            android.Manifest.permission.READ_MEDIA_IMAGES
+        } else {
+            android.Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        when {
+            ContextCompat.checkSelfPermission(
+                this,
+                permission
+            ) == PackageManager.PERMISSION_GRANTED -> {
+                val intent = Intent()
+                intent.type = "image/*"
+                intent.action = Intent.ACTION_GET_CONTENT
+                imagePickerLauncher.launch(intent)
+            }
+
+            shouldShowRequestPermissionRationale(permission) -> {
+                showPermissionRationaleDialog(
+                    this,
+                    R.string.dlg_img_permission_title,
+                    R.string.dlg_img_permission_detail,
+                    R.string.dlg_btn_allow,
+                    null
+                )
+            }
+
+            else -> {
+                requestImagePermission.launch(permission)
+            }
+        }
+    }
+
+    private val requestImagePermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            if (!isGranted) {
+                showPermissionRationaleDialog(
+                    this,
+                    R.string.dlg_img_permission_title,
+                    R.string.dlg_img_permission_detail,
+                    R.string.dlg_btn_allow,
+                    null
+                )
+            } else {
+                val intent = Intent()
+                intent.type = "image/*"
+                intent.action = Intent.ACTION_GET_CONTENT
+                imagePickerLauncher.launch(intent)
+            }
+        }
+
+    private val imagePickerLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (it.resultCode == RESULT_OK) {
+                val selectedImage: Uri? = it.data?.data
+                if (!selectedImage.toString().isNullOrEmpty()) {
+                    val path = getPath(this, selectedImage)
+                    val file =
+                        File(path.toString())
+                    val fileSizeInBytes = file.length()
+                    val fileSizeInKB = fileSizeInBytes / 1024
+                    if (fileSizeInKB > 512) {
+                        val inputStream = contentResolver.openInputStream(selectedImage!!)
+                        val oldPhoto = BitmapFactory.decodeStream(inputStream)
+
+                        val photo = getRotateImage(path, oldPhoto)
+                        try {
+                            val fos = FileOutputStream(path)
+                            photo!!.compress(Bitmap.CompressFormat.JPEG, 50, fos)
+                            fos.close()
+                        } catch (e: FileNotFoundException) {
+                            Log.d("TAG", "File not found: " + e.message)
+                        } catch (e: IOException) {
+                            Log.d("TAG", "Error accessing file: " + e.message)
+                        }
+                    }
+                    Glide.with(this).load(path).into(binding.ivSentImage)
+                    binding.clImageSelected.visibility = View.VISIBLE
+                    binding.etTypeMessage.visibility = View.INVISIBLE
+                    documentUrl = path ?: ""
+                    chatMessage = "Picture"
+                    binding.etTypeMessage.setText(chatMessage)
+                }
+            }
+        }
+    /*endregion*/
+
+    /*region Handle Response*/
+    private fun handleResponse() {
+        chatNewViewModel.getContactsFromDB()
+
+        chatNewViewModel.getContacts.observe(this) { data ->
+            if (!data.isNullOrEmpty()) {
+                if (contactsList.isEmpty()) {
+                    contactsList = data
+                } else {
+                    val newContactsList = data.filter { rc ->
+                        !contactsList.any { cl ->
+                            rc.id == cl.id
+                        }
+                    }
+                    contactsList = contactsList + newContactsList
+                }
+//                val temp = ArrayList<String>()
+//                contactsList.forEach { cm ->
+//                    temp.add(cm.contactName)
+//                }
+
+                var tempList = ArrayList<String>()
+                contactsList.forEach { cl ->
+                    tempList.add(cl.contactNumber)
+                }
+//                val tempList = ArrayList<String>()
+//                contactsList.forEach { cl ->
+//                    tempList.add(cl.contactNumber)
+//                }
+
+                newChatContactAdapter = NewChatContactAdapter(this, tempList)
+                binding.acToNumber.threshold = 1
+                binding.acToNumber.setAdapter(newChatContactAdapter)
+
+            }
+        }
+        chatNewViewModel.getContactLoader.observe(this) { data ->
+
+        }
+
+        chatNewViewModel.getChatListDataLocal.observe(this) {
+            documentUrl = ""
+            if (!it.isNullOrEmpty()) {
+
+                chatConversationAdapter.addChatList(it)
+                Handler(Looper.getMainLooper()).postDelayed({
+                    binding.rvChatConversation.smoothScrollToPosition(0)
+                }, 500)
+                if (Prefs.phoneNumber.isNotEmpty() && destinationNumber.isNotEmpty()) {
+                    chatNewViewModel.getChatFromApi(Prefs.phoneNumber, destinationNumber, page)
+                }
+            } else {
+                if (Prefs.phoneNumber.isNotEmpty() && destinationNumber.isNotEmpty()) {
+                    chatNewViewModel.getChatFromApi(Prefs.phoneNumber, destinationNumber, page)
+                }
+            }
+        }
+
+        chatNewViewModel.getLatestMessage.observe(this) {
+            if (it.isNotEmpty()) {
+                chatConversationAdapter.addChatList(it)
+                Handler(Looper.getMainLooper()).postDelayed({
+                    binding.rvChatConversation.smoothScrollToPosition(0)
+                }, 500)
+                chatNewViewModel.clearLatestData()
+            }
+        }
+
+        chatNewViewModel.getApiChatListData.observe(this) { chatData ->
+            if (chatData.conversation.isNullOrEmpty()) {
+                if (chatData.pagination.currentPage == 1) {
+                    chatConversationAdapter.addChatList(emptyList())
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        binding.rvChatConversation.smoothScrollToPosition(0)
+                    }, 500)
+                }
+            } else {
+                totalPages = chatData.pagination.totalPage
+                page = chatData.pagination.currentPage
+                chatConversationAdapter.addChatList(chatData.conversation)
+                isLoading = false
+            }
+        }
+
+
+
+        chatNewViewModel.getApiChatListLastData.observe(this) { chatData ->
+            if (!chatData.conversation.isNullOrEmpty()) {
+
+                    chatConversationAdapter.addChatList(chatData.conversation)
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        binding.rvChatConversation.smoothScrollToPosition(0)
+                    }, 500)
+
+            }
+        }
+
+        chatNewViewModel.getSentChatError.observe(this) {
+            if (!it.isNullOrEmpty()) {
+                showToast(this, it)
+                chatNewViewModel.clearSentError()
+            }
+        }
+
+        chatNewViewModel.getSentChat.observe(this) {
+            if (it != null) {
+                if (it) {
+                    binding.ivSendMsg.isClickable = true
+                    binding.clImageSelected.visibility = View.GONE
+                    binding.etTypeMessage.visibility = View.VISIBLE
+                    binding.etTypeMessage.setText("")
+                    documentUrl = ""
+                    chatMessage = ""
+                    chatNewViewModel.clearSetSMS()
+                }
+            }
+        }
+
+        chatNewViewModel.getEmailVerifyError.observe(this) {
+            if (!it.isNullOrEmpty()) {
+                showToast(this, it)
+                chatNewViewModel.clearResendEmail()
+            }
+        }
+
+        chatNewViewModel.getEmailVerifySuccess.observe(this) {
+            if (!it.isNullOrEmpty()) {
+                showToast(this, it)
+                chatNewViewModel.clearResendEmail()
+            }
+        }
+    }
+    /*endregion*/
+
+    /*region Select Contact For Chat*/
+    private val getContactForChat =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (it.resultCode == RESULT_OK) {
+                val data = it.data
+                val gson = Gson()
+                val contactForChat = data?.getStringExtra(keyContactForChat)
+                if (!contactForChat.isNullOrEmpty()) {
+                    val contactModel = gson.fromJson(contactForChat, ContactsModel::class.java)
+                    var name = validate(contactModel)
+                    destinationNumber = contactModel.contactNumber
+                    binding.acToNumber.visibility = View.GONE
+                    binding.clToNumberView.visibility = View.VISIBLE
+                    binding.tvToNumber.text = name
+                    chatNewViewModel.getChatFromDB(Prefs.phoneNumber, destinationNumber)
+                }
+            }
+        }
+    /*endregion*/
+
+    private fun validate(model: ContactsModel): String {
+        return if (isContainsNumber(model.contactName)) {
+            getFormattedNumber(model.contactNumber)
+        } else {
+            model.contactName
+        }
+    }
+
+    private fun setupBackPress() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                backPress()
+            }
+        })
+    }
+
+    private fun backPress() {
+        setResult(RESULT_OK)
+        finish()
+    }
+
+    fun observeSocketResponses() {
+        TelnyxManager.getWsMessageResponse()?.observe(this) {
+            it.let {
+                Logger.d(TAG, "Socket Response WsMessage $it")
+            }
+        }
+
+        TelnyxManager.getSocketResponse()
+            ?.observe(this, object : SocketObserver<ReceivedMessageBody>() {
+                override fun onConnectionEstablished() {
+                    Logger.d(TAG, "Socket Response onConnectionEstablished")
+                }
+
+                override fun onError(message: String?) {
+                    Logger.d(TAG, "Socket Response onError")
+                }
+
+                override fun onLoading() {
+                    Logger.d(TAG, "Socket Response onLoading")
+                }
+
+                override fun onMessageReceived(data: ReceivedMessageBody?) {
+                    Logger.d(TAG, "Socket Response onMessageReceived")
+                    Logger.d(TAG, "Socket Response onMessageReceived data.method ${data?.method}")
+                    Logger.d(TAG, "Socket Response onMessageReceived data.result ${data?.result}")
+                    when (data?.method) {
+                        SocketMethod.INVITE.methodName -> {
+                            Logger.d(TAG, "Socket Response INVITE: ")
+                            val inviteResponse = data.result as InviteResponse
+                            TelnyxManager.setCurrentCall(inviteResponse.callId)
+                            Logger.d(
+                                TAG,
+                                "Socket Response INVITE: inviteResponse $inviteResponse"
+                            )
+                            onInComingCallLauncher.launch(
+                                Intent(this@NewMessageActivity, CallInComingActivity::class.java)
+                                    .putExtra(keyCallerName, inviteResponse.callerIdName)
+                                    .putExtra(keyCallerNumber, inviteResponse.callerIdNumber)
+                                    .putExtra(keyCallerId, inviteResponse.callId)
+                            )
+                        }
+
+                        else -> {
+                            Logger.d(TAG, "Socket Response ELSE: ${data?.method}")
+                        }
+                    }
+                }
+
+                override fun onSocketDisconnect() {
+                    Logger.d(TAG, "Socket Response onSocketDisconnect")
+                }
+            })
+    }
+
+    private val onInComingCallLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (it.resultCode == RESULT_OK) {
+                finish()
+            }
+        }
+
+    private fun showImagePreview(chatConversation: ChatConversation) {
+        val imagePreviewDialog = ImagePreviewDialog(chatConversation)
+        imagePreviewDialog.show(supportFragmentManager, "ImagePreviewDialog")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacks(runnable)
+        Prefs.destinationNumbers = ""
+    }
+}
+
