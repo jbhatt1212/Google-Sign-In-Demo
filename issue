@@ -117,3 +117,18 @@
             }
 
         })
+fun getCorrectNumberRegion(phoneNumber: String, countryIso: String): String? {
+    val phoneNumberUtil :PhoneNumberUtil = PhoneNumberUtil.getInstance()
+    try {
+        var phone = phoneNumberUtil.parse(phoneNumber, countryIso)
+        if (phoneNumber.length>9) {
+            var region = phoneNumberUtil.getRegionCodeForNumber(phone)
+            return region
+        }
+        return ""
+
+    } catch (e: Exception) {
+        Logger.e("NumberParseException", "" + e)
+    }
+    return null
+}
