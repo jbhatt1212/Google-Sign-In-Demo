@@ -1,134 +1,79 @@
- binding.spDialerCountry.onItemSelectedListener =
-            object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(
-                    parent: AdapterView<*>?,
-                    view: View?,
-                    position: Int,
-                    id: Long
-                ) {
-                    val country = countryAdapter.getItem(position) as CountriesList
-                    countryCodeISO = country.countryIsoCode
-                    countryName = country.countryName
-                    var text = binding.etDialNumber.text.toString()
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:backgroundTint="@color/clr_screen_bg"
+    android:background="@drawable/ripple_dial_effect"
+    android:padding="@dimen/spacing_12"
+    android:id="@+id/clDialNumber"
+    xmlns:tools="http://schemas.android.com/tools"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+        
+        <TextView
+            android:id="@+id/tvDialNumber"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="@font/product_sans_regular"
+            android:padding="@dimen/spacing_2"
+            android:text="1"
+            android:textAlignment="center"
+            android:textColor="@color/clr_text"
+            android:textSize="@dimen/txt_size_22"
+            android:focusable="true"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvDialNumberAlpha"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingHorizontal="@dimen/spacing_8"
+            app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/tvDialNumber"
+            tools:itemCount="3"
+            tools:listitem="@layout/row_dial_number_alpha" />
+</androidx.constraintlayout.widget.ConstraintLayout>
 
 
 
-                    if (text.isEmpty() || text == "+") {
-                        text = country.code
-                        binding.etDialNumber.setText(text)
-                        binding.etDialNumber.setSelection(text.length)
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@color/clr_screen_bg">
 
-                    }
-                    else if (text.contains(countryCode) && countryCode.isNotEmpty()) {
-                        text = text.replace(countryCode, country.code)
-                        binding.etDialNumber.setText(text)
-                    } else if (text.isEmpty()) {
-
-                        binding.etDialNumber.setText(country.code)
-
-                    }
-                    countryCode = country.code
-
-                        binding.spDialerCountry.setSelection(position)
-
-
-
-                }
-
-
-                override fun onNothingSelected(parent: AdapterView<*>?) {
-                    Logger.e(TAG,"onNothingSelected parent")
-                }
+    <TextView
+        android:id="@+id/tvDialNumberAlpha"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:fontFamily="@font/product_sans_regular"
+        android:paddingHorizontal="@dimen/spacing_2"
+        android:text="a"
+        android:textAlignment="center"
+        android:textColor="@color/clr_text"
+        android:textSize="@dimen/txt_size_12"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+</androidx.constraintlayout.widget.ConstraintLayout>
 
 
-            }
-     //  binding.etDialNumber.addTextChangedListener(this)
-        binding.etDialNumber.addTextChangedListener(object : TextWatcher {
-            private var isEditTextUpdate = false
-
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
 
 
-            }
+<?xml version="1.0" encoding="utf-8"?>
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/clr_btn_browse_bg">
 
-            @SuppressLint("SuspiciousIndentation")
-            override fun afterTextChanged(editable: Editable?) {
-                if (isEditTextUpdate) {
-                    isEditTextUpdate = false
-                    return
-                }
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="50dp"/>
+            <solid android:color="@color/white"/>
+        </shape>
+    </item>
 
-
-                var text = editable?.toString() ?: ""
-
-                   if (!text.startsWith("+")) {
-                    isEditTextUpdate = true
-                    text = "+$text"
-                    binding.etDialNumber.setText(text)
-                    binding.etDialNumber.setSelection(text.length)
-                    return
-                }
-                 val selectedPosition = binding.spDialerCountry.selectedItemPosition
-
-
-                val currentPosition = binding.spDialerCountry.selectedItemPosition
-
-                val currentCountry = countryAdapter.getItem(currentPosition) as CountriesList
-                val detectedRegion = getCorrectNumberRegion(text, currentCountry.countryIsoCode)
-                var matchFound = false
-
-
-                if (!detectedRegion.isNullOrEmpty()) {
-                    for (i in 0 until countryAdapter.count) {
-                        val country = countryAdapter.getItem(i) as CountriesList
-                        if (country.countryIsoCode.equals(detectedRegion, ignoreCase = true)) {
-                            if (currentPosition != i) {
-                                isEditTextUpdate = true
-                                binding.spDialerCountry.setSelection(i)
-                            }
-                            matchFound = true
-                            break
-                        }
-                    }
-                }
-                if (!matchFound) {
-                    for (i in 0 until countryAdapter.count) {
-                        val country = countryAdapter.getItem(i) as CountriesList
-
-                        if (text.startsWith(country.code)) {
-                            if (currentPosition != i || country.countryIsoCode != currentCountry.countryIsoCode) {
-                                isEditTextUpdate = true
-                                binding.spDialerCountry.setSelection(i)
-                            }
-                            matchFound = true
-                            break
-
-                        }
-                    }
-
-                }
-                if (!matchFound) {
-                    Log.d(TAG, "No match found for text: $text")
-                }
-
-                Log.d(TAG, "After Selection: ${binding.spDialerCountry.selectedItemPosition}")
-            }
-
-        })
-fun getCorrectNumberRegion(phoneNumber: String, countryIso: String): String? {
-    val phoneNumberUtil :PhoneNumberUtil = PhoneNumberUtil.getInstance()
-    try {
-        var phone = phoneNumberUtil.parse(phoneNumber, countryIso)
-        if (phoneNumber.length>9) {
-            var region = phoneNumberUtil.getRegionCodeForNumber(phone)
-            return region
-        }
-        return ""
-
-    } catch (e: Exception) {
-        Logger.e("NumberParseException", "" + e)
-    }
-    return null
-}
+</ripple>
